@@ -61,13 +61,18 @@ def prune_expired(seen, days):
 
 
 def deduplicate(items):
-    """Return only items not previously seen, updating the persistent store."""
+    """Return only items not previously seen.
+
+    This is read-only with respect to the persistent store: items are NOT
+    marked as seen here. Call :func:`commit_seen` once the items have actually
+    been delivered, so that a failed send is retried on the next run instead of
+    being silently dropped.
+    """
     persistent = load_seen(config.SEEN_URLS_FILE)
     persistent = prune_expired(persistent, config.DEDUP_RETENTION_DAYS)
 
     seen_this_run = set()
     unique = []
-    now = datetime.utcnow().isoformat()
 
     for item in items:
         url_hash = item.get("hash")
@@ -77,9 +82,30 @@ def deduplicate(items):
             continue
 
         seen_this_run.add(url_hash)
-        persistent[url_hash] = now
         unique.append(item)
 
-    save_seen(persistent, config.SEEN_URLS_FILE)
     logger.info("Deduplicated to %d new items", len(unique))
     return unique
+
+
+def commit_seen(items):
+    """Persist the given items as seen, after they have been delivered.
+
+    Loads the current store, prunes expired entries, records each item's hash
+    with the current timestamp, and saves. Safe to call with an empty list.
+    """
+    persistent = load_seen(config.SEEN_URLS_FILE)
+    persistent = prune_expired(persistent, config.DEDUP_RETENTION_DAYS)
+
+    now = datetime.utcnow().isoformat()
+    added = 0
+    for item in items:
+        url_hash = item.get("hash")
+        if not url_hash:
+            continue
+        if url_hash not in persistent:
+            added += 1
+        persistent[url_hash] = now
+
+    save_seen(persistent, config.SEEN_URLS_FILE)
+    logger.info("Committed %d items to the seen store", added)

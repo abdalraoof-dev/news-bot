@@ -12,7 +12,7 @@ from collectors.reddit_collector import collect_reddit
 from collectors.rss_collector import collect_rss
 from output.telegram_sender import send_news
 from processor.ai_summarizer import enrich_all
-from processor.deduplicator import deduplicate
+from processor.deduplicator import commit_seen, deduplicate
 from processor.normalizer import normalize_all
 from utils.logger import setup_logger
 
@@ -67,9 +67,12 @@ def main():
 
     success = send_news(final_items)
     if success:
+        # Only now mark the delivered items as seen, so a failed send is
+        # retried on the next run instead of being silently dropped.
+        commit_seen(final_items)
         logger.info("Digest sent successfully")
     else:
-        logger.error("Digest sent with errors")
+        logger.error("Digest sent with errors; not marking items as seen")
 
 
 if __name__ == "__main__":
