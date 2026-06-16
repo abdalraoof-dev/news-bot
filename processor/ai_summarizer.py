@@ -54,66 +54,130 @@ def _strip_fences(text):
     return text.strip()
 
 
-def _enrich_item(item, client):
-    """Ask Gemini to summarize/classify a single item; merge results in.
+_BATCH_SIZE = 15
+_MAX_RETRIES = 3
 
-    Returns the original item unchanged on any failure.
+_BATCH_INSTRUCTIONS = (
+    "You are a cybersecurity news analyst writing for an Arabic-speaking "
+    "audience. You will receive a JSON array of news items. For EACH item, "
+    "produce one JSON object with exactly these keys:\n"
+    '  "index": the same integer index given in the input item\n'
+    '  "title": the headline translated into clear Modern Standard Arabic '
+    "(keep CVE IDs, product names, and brand names in their original Latin "
+    "form)\n"
+    '  "summary": a concise 2-3 sentence summary IN ARABIC, max 350 '
+    "characters\n"
+    '  "category": one of breach, vulnerability, threat_intel, tools, '
+    "general\n"
+    '  "importance": an integer 0-100\n'
+    '  "entities": a list (max 5) of notable CVEs, companies, or malware '
+    "names (keep these in their original Latin form)\n\n"
+    "Respond with ONLY a JSON array of these objects, in the same order, with "
+    "no markdown fences and no extra prose.\n\n"
+    "Input items:\n"
+)
+
+
+def _generate_with_retry(client, prompt):
+    """Call Gemini, retrying with exponential backoff on transient errors."""
+    delay = 5
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            response = client.models.generate_content(
+                model=_MODEL, contents=prompt
+            )
+            return response.text or ""
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc)
+            transient = "429" in message or "RESOURCE_EXHAUSTED" in message or (
+                "503" in message
+            )
+            if attempt < _MAX_RETRIES and transient:
+                logger.warning(
+                    "Gemini transient error (attempt %d/%d), retrying in %ds",
+                    attempt,
+                    _MAX_RETRIES,
+                    delay,
+                )
+                time.sleep(delay)
+                delay *= 2
+                continue
+            logger.warning("Gemini call failed: %s", message)
+            return ""
+    return ""
+
+
+def _merge_enrichment(item, data):
+    """Merge a single AI result object into an item in place."""
+    if isinstance(data.get("title"), str) and data["title"].strip():
+        item["title"] = data["title"].strip()
+    if isinstance(data.get("summary"), str) and data["summary"].strip():
+        item["summary"] = data["summary"][:350]
+    if isinstance(data.get("category"), str) and data["category"].strip():
+        item["category"] = data["category"].strip()
+    if "importance" in data:
+        try:
+            item["importance"] = max(0, min(100, int(data["importance"])))
+        except (ValueError, TypeError):
+            pass
+    if isinstance(data.get("entities"), list):
+        item["entities"] = [str(e) for e in data["entities"][:5]]
+
+
+def _enrich_batch(batch, client):
+    """Enrich a list of items with a single Gemini call.
+
+    The original items are returned unchanged if the call or parsing fails.
     """
-    prompt = (
-        "You are a cybersecurity news analyst writing for an Arabic-speaking "
-        "audience. Analyze the item below and respond with ONLY a JSON object "
-        "(no markdown, no prose) with exactly these keys:\n"
-        '  "title": the headline translated into clear Modern Standard Arabic '
-        "(keep CVE IDs, product names, and brand names in their original "
-        "form)\n"
-        '  "summary": a concise 2-3 sentence summary IN ARABIC, max 350 '
-        "characters\n"
-        '  "category": one of breach, vulnerability, threat_intel, tools, '
-        "general\n"
-        '  "importance": an integer 0-100\n'
-        '  "entities": a list (max 5) of notable CVEs, companies, or malware '
-        "names (keep these in their original Latin form)\n\n"
-        f"Title: {item.get('title', '')}\n"
-        f"Summary: {item.get('summary', '')}\n"
-        f"Source: {item.get('source', '')}\n"
-    )
+    payload = [
+        {
+            "index": idx,
+            "title": item.get("title", ""),
+            "summary": item.get("summary", ""),
+            "source": item.get("source", ""),
+        }
+        for idx, item in enumerate(batch)
+    ]
+    prompt = _BATCH_INSTRUCTIONS + json.dumps(payload, ensure_ascii=False)
+
+    raw = _generate_with_retry(client, prompt)
+    if not raw:
+        return batch
 
     try:
-        response = client.models.generate_content(model=_MODEL, contents=prompt)
-        raw = _strip_fences(response.text or "")
-        data = json.loads(raw)
+        results = json.loads(_strip_fences(raw))
+    except (ValueError, TypeError) as exc:
+        logger.warning("Could not parse AI batch response: %s", exc)
+        return batch
 
-        if isinstance(data.get("title"), str) and data["title"].strip():
-            item["title"] = data["title"].strip()
-        if isinstance(data.get("summary"), str) and data["summary"].strip():
-            item["summary"] = data["summary"][:350]
-        if isinstance(data.get("category"), str) and data["category"].strip():
-            item["category"] = data["category"].strip()
-        if "importance" in data:
-            try:
-                item["importance"] = max(0, min(100, int(data["importance"])))
-            except (ValueError, TypeError):
-                pass
-        if isinstance(data.get("entities"), list):
-            item["entities"] = [str(e) for e in data["entities"][:5]]
+    if not isinstance(results, list):
+        return batch
 
-        return item
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Enrichment failed for '%s': %s", item.get("title", ""), exc)
-        return item
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        try:
+            idx = int(result.get("index"))
+        except (ValueError, TypeError):
+            continue
+        if 0 <= idx < len(batch):
+            _merge_enrichment(batch[idx], result)
+
+    return batch
 
 
 def enrich_all(items):
-    """Enrich every item with Gemini, respecting a basic rate limit."""
+    """Enrich items with Gemini in batches to conserve API quota."""
     client = _init_client()
-    if client is None:
+    if client is None or not items:
         return items
 
     enriched = []
-    for index, item in enumerate(items):
-        enriched.append(_enrich_item(item, client))
-        # Rate limit: pause after every 10 items.
-        if (index + 1) % 10 == 0:
+    for start in range(0, len(items), _BATCH_SIZE):
+        batch = items[start : start + _BATCH_SIZE]
+        enriched.extend(_enrich_batch(batch, client))
+        # Brief pause between batches to respect per-minute limits.
+        if start + _BATCH_SIZE < len(items):
             time.sleep(5)
 
     enriched.sort(key=lambda i: i.get("importance", 0), reverse=True)
