@@ -60,15 +60,19 @@ def _enrich_item(item, client):
     Returns the original item unchanged on any failure.
     """
     prompt = (
-        "You are a cybersecurity news analyst. Analyze the item below and "
-        "respond with ONLY a JSON object (no markdown, no prose) with exactly "
-        "these keys:\n"
-        '  "summary": a concise 2-3 sentence summary, max 350 characters\n'
+        "You are a cybersecurity news analyst writing for an Arabic-speaking "
+        "audience. Analyze the item below and respond with ONLY a JSON object "
+        "(no markdown, no prose) with exactly these keys:\n"
+        '  "title": the headline translated into clear Modern Standard Arabic '
+        "(keep CVE IDs, product names, and brand names in their original "
+        "form)\n"
+        '  "summary": a concise 2-3 sentence summary IN ARABIC, max 350 '
+        "characters\n"
         '  "category": one of breach, vulnerability, threat_intel, tools, '
         "general\n"
         '  "importance": an integer 0-100\n'
         '  "entities": a list (max 5) of notable CVEs, companies, or malware '
-        "names\n\n"
+        "names (keep these in their original Latin form)\n\n"
         f"Title: {item.get('title', '')}\n"
         f"Summary: {item.get('summary', '')}\n"
         f"Source: {item.get('source', '')}\n"
@@ -79,6 +83,8 @@ def _enrich_item(item, client):
         raw = _strip_fences(response.text or "")
         data = json.loads(raw)
 
+        if isinstance(data.get("title"), str) and data["title"].strip():
+            item["title"] = data["title"].strip()
         if isinstance(data.get("summary"), str) and data["summary"].strip():
             item["summary"] = data["summary"][:350]
         if isinstance(data.get("category"), str) and data["category"].strip():

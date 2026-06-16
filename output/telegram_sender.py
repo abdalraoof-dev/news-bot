@@ -16,12 +16,12 @@ logger = setup_logger("telegram_sender")
 
 # Category -> display label, in the order categories should be sent.
 _CATEGORY_LABELS = {
-    "breach": "🚨 Breaches & Incidents",
-    "vulnerability": "⚠️ Vulnerabilities & CVEs",
-    "threat_intel": "🧠 Threat Intelligence",
-    "tools": "🛠 Tools & Frameworks",
-    "github": "💻 GitHub Updates",
-    "general": "📰 General Cybersecurity News",
+    "breach": "🚨 الاختراقات والحوادث الأمنية",
+    "vulnerability": "⚠️ الثغرات و الـ CVEs",
+    "threat_intel": "🧠 استخبارات التهديدات",
+    "tools": "🛠 الأدوات والأطر البرمجية",
+    "github": "💻 تحديثات GitHub",
+    "general": "📰 أخبار الأمن السيبراني العامة",
 }
 
 _CATEGORY_ORDER = ["breach", "vulnerability", "threat_intel", "tools", "github", "general"]
@@ -152,8 +152,8 @@ def _format_item(item):
     ]
     if hashtags:
         lines.append(hashtags)
-    lines.append(f"📌 <b>Source:</b> {source}")
-    lines.append(f'🔗 <a href="{_escape_html(url)}">Read More</a>')
+    lines.append(f"📌 <b>المصدر:</b> {source}")
+    lines.append(f'🔗 <a href="{_escape_html(url)}">اقرأ المزيد</a>')
 
     return "\n".join(lines)
 
@@ -161,7 +161,7 @@ def _format_item(item):
 def send_news(items):
     """Send all items to Telegram, grouped and ordered by category."""
     if not items:
-        return _send("No new items this cycle.")
+        return _send("لا توجد أخبار جديدة في هذه الدورة.")
 
     # Group items by category.
     grouped = {}
@@ -174,8 +174,8 @@ def send_news(items):
     ok = True
 
     header = (
-        "🛡 <b>Cyber Intelligence Digest</b>\n"
-        f"<i>{len(items)} new items this cycle</i>"
+        "🛡 <b>نشرة استخبارات الأمن السيبراني</b>\n"
+        f"<i>{len(items)} خبر جديد في هذه الدورة</i>"
     )
     if not _send(header):
         ok = False
@@ -195,7 +195,7 @@ def send_news(items):
                 ok = False
             time.sleep(config.TELEGRAM_DELAY)
 
-    footer = "✅ <i>End of digest. Stay safe.</i>"
+    footer = "✅ <i>انتهت النشرة. حافظوا على أمانكم.</i>"
     if not _send(footer):
         ok = False
 
